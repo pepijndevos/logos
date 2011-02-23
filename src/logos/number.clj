@@ -17,13 +17,13 @@
 ;; OR = max
 
 (defn build-num-list [base n]
-  (map #(Integer/parseInt (str %)) (Integer/toString n base)))
+  (map #(Integer/parseInt (str %)) (reverse (Integer/toString n base))))
 
 (defn build-num [base l]
   (reduce #(+ %1 (* (first %2) (last %2)))
-          0 (map vector (iterate #(* 10 %) 1) l)))
+          0 (map vector (iterate #(* base %) 1) l)))
 
-(defmacro defadder [nm base]
+(defmacro addfn [base]
   (let [bg (gensym)
         xg (gensym)
         yg (gensym)
@@ -37,10 +37,13 @@
                                c (max (overflow base x y)
                                       (overflow base half b))]]
                          `((== ~b ~bg) (== ~x ~xg) (== ~y ~yg) (== ~r ~rg) (== ~c ~cg)))]
-    (concat `(defn ~nm [~bg ~xg ~yg ~rg ~cg])
+    (concat `(fn [~bg ~xg ~yg ~rg ~cg])
             (list (cons `cond-e conditions)))))
 
-(defadder full-adder-o 10)
+(def ^:dynamic *full-adder-o* (addfn 2))
+
+(defmacro with-adder [base & exp]
+  `(binding [*full-adder-o* (addfn ~base)] ~@exp))
 
 (defn pos-o [n]
   (exist [a b]
@@ -65,7 +68,7 @@
       ((== [e] n) (== [f] m)
        (exist [a c]
          (== [a c] r)
-         (full-adder-o d e f a c)))
+         (*full-adder-o* d e f a c)))
       ((== [e] n) (gen-adder-o d n m r))
       ((== [e] m) (>b-o n) (>b-o r)
        (adder-o d [e] n r))
@@ -77,7 +80,7 @@
       (== (lcons b y) m) (pos-o y)
       (== (lcons c z) r) (pos-o z)
       (all
-        (full-adder-o d a b c e)
+        (*full-adder-o* d a b c e)
         (adder-o e x y z))))
 
 (defn +o [n m s]
