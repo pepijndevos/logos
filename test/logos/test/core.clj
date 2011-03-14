@@ -1,5 +1,5 @@
 (ns logos.test.core
-  (:refer-clojure :exclude [reify ==])
+  (:refer-clojure :exclude [reify == inc])
   (:use [logos.minikanren] :reload)
   (:use [logos.logic] :reload)
   (:use clojure.test clojure.pprint)
@@ -547,7 +547,7 @@
                        ((teacup-o x) (== true y) s#)
                        ((== false x) (== true y)))
                       (== (cons x (cons y ())) r)))
-         '((tea true) (false true) (cup true)))))
+         '((false true) (tea true) (cup true)))))
 
 ;; =============================================================================
 ;; cons-o
@@ -629,7 +629,7 @@
 (deftest test-flatten-o
   (is (= (run* [x]
                (flatten-o '[[a b] c] x))
-         '((a b c) ([[a b] c]) ([a b] c) (a b (c)) (a (b) c) (a b c ()) ([a b] (c)) (a b () c) ([a b] c ()) (a (b) (c)) (a b () (c)) (a (b) c ()) (a b () c ())))))
+         '(([[a b] c]) ([a b] (c)) ([a b] c) (a (b) (c)) ([a b] c ()) (a (b) c) (a (b) c ()) (a b (c)) (a b c) (a b () (c)) (a b c ()) (a b () c) (a b () c ())))))
 
 ;; =============================================================================
 ;; member-o
@@ -652,7 +652,7 @@
                  (== q [_ _])
                  (member-o ['foo _] q)
                  (member-o [_ 'bar] q))))
-         '([[foo bar] _.0] [[_.0 bar] [foo _.1]] [[foo _.0] [_.1 bar]] [_.0 [foo bar]]))))
+         '([[foo bar] _.0] [[foo _.0] [_.1 bar]] [[_.0 bar] [foo _.1]] [_.0 [foo bar]]))))
 
 ;; -----------------------------------------------------------------------------
 ;; rember-o
@@ -690,11 +690,7 @@
                       (digit-4 x)
                       (digit-4 y)
                       (== q [x y])))
-         '([0 0] [1 0] [0 1] [2 0] [0 2] [1 1] [0 3] [3 0] [1 2] [2 1] [1 3] [3 1] [2 2] [3 2] [2 3] [3 3]))))
-
-(deftest test-mplus-e
-  (is (= (reduce mplus-s '((0 1) (2)))
-         '(2 0 1))))
+         '([0 0] [0 1] [0 2] [1 0] [0 3] [1 1] [1 2] [2 0] [1 3] [2 1] [3 0] [2 2] [3 1] [2 3] [3 2] [3 3]))))
 
 ;; -----------------------------------------------------------------------------
 ;; any-o
@@ -715,3 +711,34 @@
               (any-o s#)
               (== true q))
          (list true true true true true))))
+
+;; -----------------------------------------------------------------------------
+;; divergence
+
+(def f1 (exist [] f1))
+
+(deftest test-divergence-1
+  (is (= (run 1 [q]
+            (cond-e
+             (f1)
+             ((== false false))))
+         '(_.0))))
+
+(deftest test-divergence-2
+  (is (= (run 1 [q]
+            (cond-e
+             (f1 (== false false))
+             ((== false false))))
+         '(_.0))))
+
+(def f2
+     (exist []
+            (cond-e
+             (f2 (cond-e
+                  (f2) 
+                  ((== false false))))
+             ((== false false)))))
+
+(deftest test-divergence-3
+  (is (= (run 5 [q] f2)
+         '(_.0 _.0 _.0 _.0 _.0))))

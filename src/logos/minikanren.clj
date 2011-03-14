@@ -1,5 +1,5 @@
 (ns logos.minikanren
-  (:refer-clojure :exclude [reify ==])
+  (:refer-clojure :exclude [reify == inc])
   (:use [clojure.pprint :only [pprint]]))
 
 (def ^:dynamic *occurs-check* true)
@@ -33,6 +33,18 @@
 
 (defprotocol LConsPrint
   (toShortString [this]))
+
+(defprotocol IPair
+  (lhs [this])
+  (rhs [this]))
+
+(deftype Pair [lhs rhs]
+  IPair
+  (lhs [this] lhs)
+  (rhs [this] rhs)
+  Object
+  (toString [this]
+            (str "(" lhs " . " rhs ")")))
 
 (deftype LCons [a d cache]
   LConsSeq
@@ -110,7 +122,7 @@
 (declare walk-term)
 (declare build-term)
 
-(deftype Substitutions [s]
+(deftype Substitutions [s l]
   Object
   (equals [this o]
     (or (identical? this o)
@@ -130,7 +142,7 @@
          (ext-no-check this x v)))
 
   (ext-no-check [this x v]
-                (Substitutions. (assoc s x v)))
+                (Substitutions. (assoc s x v) (cons (Pair. x v) l)))
 
   (walk [this v]
         (loop [v v lv nil]
@@ -166,14 +178,15 @@
   (build [this u]
          (build-term u this)))
 
-(def empty-s (Substitutions. {}))
+(def empty-s (Substitutions. {} '()))
 
 (defn subst? [x]
   (instance? Substitutions x))
 
 (defn to-s [v]
-  (let [s (reduce (fn [m [k v]] (assoc m k v)) {} v)]
-    (Substitutions. s)))
+  (let [s (reduce (fn [m [k v]] (assoc m k v)) {} v)
+        l (reduce (fn [l [k v]] (cons (Pair. k v) l)) '() v)]
+    (Substitutions. s l)))
 
 ;; =============================================================================
 ;; Unification
@@ -675,10 +688,13 @@
 (extend-type LVar
   IBuildTerm
   (build-term [u s]
-   (let [m (.s ^Substitutions s)]
+   (let [m (.s ^Substitutions s)
+         l (.l ^Substitutions s)
+         lv (lvar 'ignore) ]
      (if (contains? m u)
        s
-       (Substitutions. (assoc m u (lvar 'ignore)))))))
+       (Substitutions. (assoc m u lv)
+                       (cons (Pair. u lv) l))))))
 
 (extend-type LCons
   IBuildTerm
@@ -700,7 +716,10 @@
   (bind [this g]))
 
 (defprotocol IMPlus
-  (mplus [a b]))
+  (mplus [a f]))
+
+(defprotocol ITake
+  (take* [a]))
 
 (defmacro bind*
   ([a g] `(bind ~a ~g))
@@ -710,10 +729,25 @@
 (defmacro mplus*
   ([e] e)
   ([e & e-rest]
-     `(mplus ~e (lazy-seq (let [r# (mplus* ~@e-rest)]
-                            (cond
-                             (subst? r#) (cons r# nil)
-                             :else r#))))))
+     `(mplus ~e (fn [] (mplus* ~@e-rest)))))
+
+(defmacro inc [& rest]
+  `(fn inc [] ~@rest))
+
+(extend-type Object
+  ITake
+  (take* [this] this))
+
+(deftype Choice [a f]
+  IBind
+  (bind [this g]
+        (mplus (g a) (inc (bind f g))))
+  IMPlus
+  (mplus [this fp]
+         (Choice. a (fn [] (mplus (fp) f))))
+  ITake
+  (take* [this]
+         (lazy-seq (cons (first a) (lazy-seq (take* f))))))
 
 ;; -----------------------------------------------------------------------------
 ;; MZero
@@ -726,75 +760,40 @@
   nil
   (mplus [_ b] b))
 
+(extend-protocol ITake
+  nil
+  (take* [_] '()))
+
 ;; -----------------------------------------------------------------------------
 ;; Unit
-
-(defprotocol IMPlusUnit
-  (mplus-u [this a]))
 
 (extend-type Substitutions
   IBind
   (bind [this g]
         (g this))
   IMPlus
-  (mplus [this b]
-         (mplus-u b this)))
+  (mplus [this f]
+         (Choice. this f))
+  ITake
+  (take* [this] this))
 
-(extend-protocol IMPlusUnit
-  nil
-  (mplus-u [_ a] a))
-
-(extend-type Substitutions
-  IMPlusUnit
-  (mplus-u [this a]
-           (list a this)))
-
-(extend-protocol IMPlusUnit
-  clojure.lang.ISeq
-  (mplus-u [this a]
-           (cons a this)))
+(extend-type Object
+  IMPlus
+  (mplus [this f]
+         (Choice. this f)))
 
 ;; -----------------------------------------------------------------------------
-;; Stream
+;; Inc
 
-(defn mplus-concat [[f & r]]
-  (if r
-    (lazy-seq
-     (mplus f (mplus-concat r)))
-    f))
-
-(extend-protocol IBind
-  clojure.lang.ISeq
+(extend-type clojure.lang.Fn
+  IBind
   (bind [this g]
-        (if-let [r (seq (map g this))]
-          (mplus-concat r))))
-
-(defprotocol IMPlusStream
-  (mplus-s [this a]))
-
-(extend-protocol IMPlus
-  clojure.lang.ISeq
-  (mplus [this b]
-         (mplus-s b this)))
-
-(extend-protocol IMPlusStream
-  nil
-  (mplus-s [_ a] a))
-
-(extend-type Substitutions
-  IMPlusStream
-  (mplus-s [this a] (cons this a)))
-
-(extend-protocol IMPlusStream
-  clojure.lang.ISeq
-  (mplus-s [this a]
-           (if (seq this)
-             (if (seq a)
-               (cons (first a)
-                     (cons (first this)
-                           (mplus* (next a) (next this))))
-               this)
-             (if (seq a) a '()))))
+        (inc (bind (this) g)))
+  IMPlus
+  (mplus [this f]
+         (inc (mplus (f) this)))
+  ITake
+  (take* [this] (take* (this))))
 
 ;; =============================================================================
 ;; Syntax
@@ -810,8 +809,7 @@
 (defmacro == [u v]
   `(fn [a#]
      (if-let [b# (unify a# ~u ~v)]
-       b#
-       nil)))
+       b# nil)))
 
 (defn bind-cond-e-clause [a]
   (fn [g-rest]
@@ -823,11 +821,8 @@
 (defmacro cond-e [& clauses]
   (let [a (gensym "a")]
     `(fn [~a]
-       (lazy-seq
-        (let [s# (mplus* ~@(bind-cond-e-clauses a clauses))]
-          (or (and (subst? s#)
-                   (list s#))
-              s#))))))
+       (inc
+        (mplus* ~@(bind-cond-e-clauses a clauses))))))
 
 (defn lvar-bind [sym]
   ((juxt identity
@@ -838,55 +833,29 @@
 
 (defmacro exist [[& x-rest] & g-rest]
   `(fn [a#]
-     (let [~@(lvar-binds x-rest)]
-       (bind* a# ~@g-rest))))
-
-(defn reifier [lvar]
-  (fn [a]
-    (reify a lvar)))
-
-(defn to-seq [x]
-  (cond
-   (nil? x) '()
-   (seq? x) x
-   :else    (list x)))
+     (inc
+      (let [~@(lvar-binds x-rest)]
+        (bind* a# ~@g-rest)))))
 
 (defmacro run [& [n [x] & g-rest]]
-  `(let [r# (let [~x (lvar '~x)]
-              (->> (to-seq ((fn [a#] (bind* a# ~@g-rest)) empty-s))
-                   (remove nil?)
-                   (map (reifier ~x))))]
-     (if ~n (take ~n r#) r#)))
+  `(let [xs# (take* (fn []
+                     ((exist [~x] ~@g-rest
+                             (fn [a#]
+                               (cons (reify a# ~x) '())))
+                      empty-s)))]
+     (if ~n
+       (take ~n xs#)
+       xs#)))
 
 (defmacro run* [& body]
   `(run false ~@body))
 
-;; TODO : fix if possible, thought scopes could help, but now unsure
-
 (defmacro run-nc [& [n [x] & g-rest]]
   `(binding [*occurs-check* false]
-     (doall (run ~n [~x] ~@g-rest))))
+     (run ~n [~x] ~@g-rest)))
 
 (defmacro run-nc* [& body]
   `(run-nc false ~@body))
-
-;; solve is like run except it promises to compute the result immediately
-;; run-nc needs to compute its results immediately only because bindings
-;; and laziness don't mix at the moment.
-
-(defmacro solve [& [n [x] & g-rest]]
-  `(doall (run ~n [~x] ~@g-rest)))
-
-(defmacro solve* [& body]
-  `(solve false ~@body))
-
-;; NOTE : solve-nc relies on run-nc, subject to change
-
-(defmacro solve-nc [& body]
-  `(run-nc ~@body))
-
-(defmacro solve-nc* [& body]
-  `(solve-nc false ~@body))
 
 (defn sym->lvar [sym]
   `(lvar '~sym))
