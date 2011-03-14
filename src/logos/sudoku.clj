@@ -84,12 +84,13 @@
     (concat
       `(exist [~@board]
               (== ~b (list ~@board)))
-      (map (fn [row]
-             `(permutation-o (list ~@row) (range 1 10)))
-           rows)
-      (map (fn [col]
-             `(permutation-o (list ~@col) (range 1 10)))
-           cols)
-      (map (fn [block]
-             `(permutation-o (list ~@block) (range 1 10)))
-           blocks))))
+      (interleave
+        (map (fn [row]
+               `(permutation-o (list ~@row) (range 1 10)))
+             rows)
+        (map (fn [col]
+               `(permutation-o (list ~@col) (range 1 10)))
+             cols)
+        (map (fn [block]
+               `(permutation-o (list ~@block) (range 1 10)))
+             blocks)))))
